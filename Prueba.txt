@@ -1,1 +1,11 @@
-Prueba del funcionamiento de los commit
+Base para subir los commits
+git init
+git add .
+git commit -m "Primer commit"
+git branch -M main
+git remote add origin https://github.com/USUARIO/NOMBRE_DEL_REPO.git
+git push -u origin main
+git switch -c Branch_Edward
+git add .
+git commit -m "Primer commit en Branch_Edward"
+git push -u origin Branch_Edward
