@@ -9,3 +9,8 @@ git switch -c Branch_Edward
 git add .
 git commit -m "Primer commit en Branch_Edward"
 git push -u origin Branch_Edward
+
+Para subir cada actualizacion del codigo
+git add.
+git commit -m "Commit n"
+git push
