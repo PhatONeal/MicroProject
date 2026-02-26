@@ -1,95 +1,189 @@
 ;=========================================================
 ; Código en Assembler para PIC18F4550
-; Punto de partida: código base del profesor
+; V 1.0
+; Parpadeo de LED en RB0:
+;   - 1 segundo ENCENDIDO
+;   - 2 segundos APAGADO
 ;
-; Cambios principales:
-; - Se implementa un retardo largo usando dos contadores
-; - Se separa el retardo en una subrutina reutilizable
-; - Se empieza a estructurar el programa por secciones
+; Frecuencia: 8 MHz (Oscilador Interno)
+; Ensamblador: MPLAB XC8 3.0
 ;
-; Nota:
-; Esta versión aún NO cumple todos los requerimientos finales del ejercicio.
-; Por ahora estoy adaptando el código a un estilo más acorde a mi forma de
-; trabajar y documentar los avances.
+; Comentario de versión:
+; Aquí añadimos el loop maestro. Esto lo hacemos con el fin de
+; poder alcanzar retardos del orden de segundos con contadores 
+; de 8 bits. Con este tercer loop podemos hacer una mejor 
+; aproximación al segundo que nos servira despues en los 
+; siguientes puntos del proyecto.
 ;
-; Aclaración:
-; En la clase del día 25/02/2026 desarrollé una versión bastante más avanzada
-; del proyecto. Sin embargo, mi compuatdora no funciona con el WiFi de la
-; universidad y, además, todavía no tenía Git correctamente configurado,
-; por lo que no pude subir los commits en ese momento.
+; === CÁLCULO DE RETARDOS ===
+; En PIC18 cada instrucción toma 4 ciclos de reloj:
+;   T_ciclo = 4 / 8,000,000 Hz = 0.5 µs por ciclo de instrucción
 ;
-; En los proximos commits subiré las 4 versiones que desarrollé ese día
-; (2 del Ejercicio 1 y 2 del Ejercicio 2). Ahora que el entorno ya está
-; configurado, planeo subir los demás commits en las horas de la noche, 
-; cuando llegue de la universidad.
+; Se usa una estructura de 3 bucles anidados:
+;   Maestro × Externo × Interno
 ;
-; Esta seria la versión funcional del primer ejercicio presentado para 
-; desarrollar en clase.
+; Fórmula aproximada:
+;   t ≈ CNT_MASTER × CNT_EXT × CNT_INT × 6 × 0.5 µs
 ;
+; El factor 6 proviene del cuerpo del bucle interno
+; (NOPs + DECFSZ + GOTO).
+;
+; --- Retardo 1 segundo ---
+;   10 × 200 × 166 × 6 × 0.5 µs = 996,000 µs ≈ 1.0 s
+;
+; --- Retardo 2 segundos ---
+;   20 × 200 × 166 × 6 × 0.5 µs = 1,992,000 µs ≈ 2.0 s
+;
+; El pequeño error restante se compensa con el overhead
+; natural de los bucles. Estos valores se refinan después.
 ;=========================================================
 
-    #include <xc.inc>   ; Incluir definiciones del ensamblador para PIC18F4550
+    #include <xc.inc>
 
-    ; Configuración de bits de configuración (Fuses)
-    CONFIG  FOSC = INTOSCIO_EC   ; Usa el oscilador interno a 8 MHz
-    CONFIG  WDT = OFF            ; Deshabilitar el Watchdog Timer
-    CONFIG  LVP = OFF            ; Deshabilitar la programación en bajo voltaje
-    CONFIG  PBADEN = OFF         ; Configurar los pines de PORTB como digitales
+    ;=======================================================
+    ; Configuración de Fuses
+    ;=======================================================
+    CONFIG  FOSC = INTOSCIO_EC   ; Oscilador interno a 8 MHz
+    CONFIG  WDT  = OFF           ; Watchdog deshabilitado
+    CONFIG  LVP  = OFF           ; Sin programación en bajo voltaje
+    CONFIG  PBADEN = OFF         ; PORTB digital desde reset
 
-    ;===============================================
-    ; Vectores de Inicio
-    ;===============================================
+    ;=======================================================
+    ; Constantes simbólicas
+    ;=======================================================
+    #define LED_PIN   0          ; LED conectado en RB0
 
-    PSECT  resetVec, class=CODE, reloc=2  ; Sección para el vector de reinicio
-    ORG     0x00                          ; Dirección de inicio
-    GOTO    Inicio                         ; Saltar a la rutina de inicio
+    ; Contadores comunes a ambos retardos
+    ; Se mantienen iguales para que el ajuste fino
+    ; dependa solo del contador maestro
+    #define CNT_EXT   200        ; Bucle externo
+    #define CNT_INT   166        ; Bucle interno (define el ciclo base)
 
-    ;===============================================
+    ; Contador maestro
+    ; Introducido en esta versión para ampliar el rango
+    ; temporal más allá de lo posible con solo dos bucles
+    #define CNT_M_1S  10         ; ≈ 1 segundo
+    #define CNT_M_2S  20         ; ≈ 2 segundos
+
+    ;=======================================================
+    ; Vector de Reset
+    ;=======================================================
+    PSECT  resetVec, class=CODE, reloc=2
+    ORG     0x00
+    GOTO    Inicio
+
+    ;=======================================================
+    ; Vectores de interrupción (no usados)
+    ;=======================================================
+    PSECT  highIntVec, class=CODE, reloc=2
+    ORG     0x08
+    RETFIE
+
+    PSECT  lowIntVec, class=CODE, reloc=2
+    ORG     0x18
+    RETFIE
+
+    ;=======================================================
     ; Código Principal
-    ;===============================================
-    
-    PSECT  main_code, class=CODE, reloc=2  ; Sección de código principal
+    ;=======================================================
+    PSECT  main_code, class=CODE, reloc=2
 
 Inicio:
-    CLRF    TRISB       ; Configurar PORTB como salida (0 = salida, 1 = entrada)
-    CLRF    LATB        ; Apagar todos los pines de PORTB (LED apagado inicialmente)
+    CLRF    TRISB                ; PORTB como salida
+    CLRF    LATB                 ; LED inicialmente apagado
 
+    ;-------------------------------------------------------
+    ; Bucle principal:
+    ; LED encendido 1 s → apagado 2 s → repetir
+    ;-------------------------------------------------------
 Loop:
-    BTG     LATB, 0     ; Alternar el estado del LED en RB0 (si está encendido, lo apaga y viceversa)
-    CALL    Retardo_1s  ; Llamar a la rutina de retardo de 1 segundo
-    GOTO    Loop        ; Repetir el proceso de parpadeo en bucle infinito
+    BSF     LATB, LED_PIN        ; Encender LED
+    CALL    Retardo_1s           ; Retardo aproximado de 1 segundo
 
-    ;===============================================
-    ; Subrutina de Retardo de 1 Segundo (Aprox.)
-    ;===============================================
+    BCF     LATB, LED_PIN        ; Apagar LED
+    CALL    Retardo_2s           ; Retardo aproximado de 2 segundos
 
+    GOTO    Loop                 ; Ejecución continua
+
+    ;=======================================================
+    ; Subrutina: Retardo de 1 Segundo
+    ; Aquí se usa por primera vez el loop maestro.
+    ; Su función es multiplicar el tiempo alcanzable
+    ; sin cambiar la estructura interna del retardo.
+    ;=======================================================
 Retardo_1s:
-    MOVLW   25          ; Cargar el valor 25 en el registro W (contador externo)
-    MOVWF   ContadorExterno  ; Guardar el valor en la variable ContadorExterno
+    MOVFF   WREG, W_Backup       ; Preservar W (buena práctica)
 
-LoopExterno:
-    MOVLW   250         ; Cargar el valor 250 en el registro W (contador interno)
-    MOVWF   ContadorInterno  ; Guardar el valor en la variable ContadorInterno
+    MOVLW   CNT_M_1S
+    MOVWF   ContadorMaestro     ; Inicializar bucle maestro
 
-LoopInterno:
-    NOP                 ; No hacer nada (consume un ciclo de instrucción)
-    NOP                 ; No hacer nada (consume otro ciclo)
-    NOP                 ; No hacer nada (consume otro ciclo)
-    
-    DECFSZ  ContadorInterno, F  ; Decrementar ContadorInterno, si es cero, salta la siguiente instrucción
-    GOTO    LoopInterno         ; Si no es cero, repetir el bucle interno
+Loop1s_Maestro:
+    MOVLW   CNT_EXT
+    MOVWF   ContadorExterno     ; Bucle de nivel medio
 
-    DECFSZ  ContadorExterno, F  ; Decrementar ContadorExterno, si es cero, salta la siguiente instrucción
-    GOTO    LoopExterno         ; Si no es cero, repetir el bucle externo
+Loop1s_Externo:
+    MOVLW   CNT_INT
+    MOVWF   ContadorInterno     ; Bucle interno (ciclo base)
 
-    RETURN              ; Retornar al programa principal después del retardo
+Loop1s_Interno:
+    NOP                          ; Ajuste fino de tiempo
+    NOP
+    NOP
+    DECFSZ  ContadorInterno, F
+    GOTO    Loop1s_Interno
 
-    ;===============================================
-    ; Definición de Variables
-    ;===============================================
+    DECFSZ  ContadorExterno, F
+    GOTO    Loop1s_Externo
 
-    PSECT udata  ; Sección de datos sin inicializar (variables en RAM)
-ContadorExterno:   DS 1   ; Reserva 1 byte de memoria para el contador externo
-ContadorInterno:   DS 1   ; Reserva 1 byte de memoria para el contador interno
+    DECFSZ  ContadorMaestro, F
+    GOTO    Loop1s_Maestro
 
-    END            ; 
+    MOVFF   W_Backup, WREG       ; Restaurar W
+    RETURN
+
+    ;=======================================================
+    ; Subrutina: Retardo de 2 Segundos
+    ; Misma estructura que el retardo de 1 s.
+    ; Solo cambia el contador maestro, lo que
+    ; facilita el escalado del tiempo.
+    ;=======================================================
+Retardo_2s:
+    MOVFF   WREG, W_Backup
+
+    MOVLW   CNT_M_2S
+    MOVWF   ContadorMaestro
+
+Loop2s_Maestro:
+    MOVLW   CNT_EXT
+    MOVWF   ContadorExterno
+
+Loop2s_Externo:
+    MOVLW   CNT_INT
+    MOVWF   ContadorInterno
+
+Loop2s_Interno:
+    NOP
+    NOP
+    NOP
+    DECFSZ  ContadorInterno, F
+    GOTO    Loop2s_Interno
+
+    DECFSZ  ContadorExterno, F
+    GOTO    Loop2s_Externo
+
+    DECFSZ  ContadorMaestro, F
+    GOTO    Loop2s_Maestro
+
+    MOVFF   W_Backup, WREG
+    RETURN
+
+    ;=======================================================
+    ; Variables en RAM
+    ;=======================================================
+    PSECT udata
+ContadorMaestro:    DS 1         ; Nivel superior del retardo
+ContadorExterno:    DS 1         ; Nivel intermedio
+ContadorInterno:    DS 1         ; Nivel base
+W_Backup:           DS 1         ; Respaldo de WREG
+
+    END
