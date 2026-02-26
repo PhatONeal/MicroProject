@@ -1,56 +1,60 @@
 ;=========================================================
 ; Código en Assembler para PIC18F4550
-; V 2.0
+; V 3.0 (posiblemente la final)
 ; Parpadeo de LED en RB0:
 ;   - 1 segundo ENCENDIDO
 ;   - 2 segundos APAGADO
 ;
-; Frecuencia: 8 MHz (Oscilador Interno)
+; Frecuencia: 4 MHz (Oscilador Interno)
 ; Ensamblador: MPLAB XC8 3.0
 ;
 ; Comentario de versión:
-; En la versión anterior los retardos no eran precisos.
-; La fórmula que usábamos ignoraba los ciclos reales de
-; instrucciones como MOVLW, MOVWF, GOTO y la diferencia
-; del DECFSZ al saltar (2 ciclos) vs no saltar (1 ciclo).
-; Ese overhead acumulado hacía que los tiempos fueran
-; mayores de lo calculado.
+; A pesar de que en V 2.0 los contadores fueron corregidos
+; con un análisis ciclo a ciclo, los tiempos en hardware
+; seguían siendo el doble del esperado.
 ;
-; En esta versión se recalcularon los contadores usando
-; un análisis ciclo a ciclo de cada instrucción, incluyendo
-; todos los overheads. Los nuevos valores son más precisos
-; que los de la versión anterior.
+; La causa raíz no estaba en los contadores sino en la
+; frecuencia del oscilador. El PIC18F4550 arranca por
+; defecto a 4 MHz al encenderse. El fuse FOSC = INTOSCIO_EC
+; solo selecciona el oscilador interno como fuente, pero
+; no fija la frecuencia: eso lo controla el registro OSCCON.
+; Sin escribirlo explícitamente, el PIC ignoraba la
+; frecuencia que asumíamos en el cálculo.
 ;
-; === CÁLCULO CORREGIDO (ciclo a ciclo) ===
-; T_ciclo = 4 / 8,000,000 Hz = 0.5 µs
+; Al correr a 4 MHz, T_ciclo = 1.0 µs en lugar de 0.5 µs,
+; lo que duplica todos los tiempos calculados para 8 MHz.
+; Por eso el tiempo siempre era el doble del esperado.
+;
+; En esta versión se tomaron dos decisiones:
+;   1. Fijar la frecuencia a 4 MHz de forma explícita
+;      escribiendo en OSCCON al inicio del programa.
+;   2. Recalcular todos los contadores para 4 MHz,
+;      lo que resulta en dividir CNT_MASTER a la mitad.
+;
+; === CÁLCULO CORREGIDO PARA 4 MHz ===
+; T_ciclo = 4 / 4,000,000 Hz = 1.0 µs
 ;
 ; LoopInterno (167 iteraciones):
 ;   iter 1-166: NOP+NOP+NOP+DECFSZ(no salta)+GOTO = 6 ciclos
 ;   iter 167:   NOP+NOP+NOP+DECFSZ(salta)         = 5 ciclos
-;   Total = (166×6 + 5) = 1,001 ciclos × 0.5µs = 500.5 µs
+;   Total = (166×6 + 5) = 1,001 ciclos × 1.0µs = 1,001 µs
 ;
 ; LoopExterno (142 iteraciones):
 ;   iter 1-141: MOVLW(1)+MOVWF(1)+LoopInt(1001)+DECFSZ(1)+GOTO(2) = 1,006 c
 ;   iter 142:   MOVLW(1)+MOVWF(1)+LoopInt(1001)+DECFSZ(salta,2)   = 1,005 c
-;   Total = (141×1,006 + 1,005) = 142,851 ciclos × 0.5µs = 71,425.5 µs
+;   Total = (141×1,006 + 1,005) = 142,851 ciclos × 1.0µs = 142,851 µs
 ;
-; LoopMaestro para 1s (14 iteraciones):
-;   iter 1-13: MOVLW(1)+MOVWF(1)+LoopExt(142851)+DECFSZ(1)+GOTO(2) = 142,856 c
-;   iter 14:   MOVLW(1)+MOVWF(1)+LoopExt(142851)+DECFSZ(salta,2)   = 142,855 c
-;   Total = (13×142,856 + 142,855) = 1,999,983 ciclos
+; LoopMaestro para 1s (7 iteraciones):
+;   iter 1-6: MOVLW(1)+MOVWF(1)+LoopExt(142851)+DECFSZ(1)+GOTO(2) = 142,856 c
+;   iter 7:   MOVLW(1)+MOVWF(1)+LoopExt(142851)+DECFSZ(salta,2)   = 142,855 c
+;   Total = (6×142,856 + 142,855) = 999,991 ciclos
 ;
 ; Overhead subrutina:
 ;   CALL(2)+MOVFF(2)+MOVLW(1)+MOVWF(1)+LoopMaestro+MOVFF(2)+RETURN(2)
-;   Total ≈ 1,999,993 ciclos × 0.5µs = 999,996.5 µs ≈ 1.000 s
+;   Total = 1,000,001 ciclos × 1.0µs = 1,000,001 µs ≈ 1.000 s ✓
 ;
-; Para 2s: CNT_M_2S = 28 (el doble exacto de 14)
-;   Total ≈ 3,999,977 ciclos × 0.5µs = 1,999,988.5 µs ≈ 2.000 s
-;
-; Nota: a pesar del recálculo, en hardware el tiempo seguía
-; siendo el doble del esperado, por lo que se llego a una posible solución
-; relacionada con la frecuecia de procesamiento.
-; En la siguiente versión se recalculara el tiempo suponiendo que la frecuencia 
-; es de 4MHz 
+; Para 2s: CNT_M_2S = 14 (el doble exacto de 7)
+;   Total = 1,999,993 ciclos × 1.0µs = 1,999,993 µs ≈ 2.000 s ✓
 ;=========================================================
 
     #include <xc.inc>
@@ -58,7 +62,7 @@
     ;=======================================================
     ; Configuración de Fuses
     ;=======================================================
-    CONFIG  FOSC = INTOSCIO_EC   ; Oscilador interno a 8 MHz
+    CONFIG  FOSC = INTOSCIO_EC   ; Oscilador interno (fuente)
     CONFIG  WDT  = OFF           ; Watchdog deshabilitado
     CONFIG  LVP  = OFF           ; Sin programación en bajo voltaje
     CONFIG  PBADEN = OFF         ; PORTB digital desde reset
@@ -68,19 +72,20 @@
     ;=======================================================
     #define LED_PIN   0          ; LED conectado en RB0
 
-    ; Contadores comunes a ambos retardos.
-    ; Estos valores surgen del análisis ciclo a ciclo
-    ; e incluyen la corrección por overhead de bucles.
-    #define CNT_EXT   142        ; Cambió de 200 → 142: el overhead de MOVLW+MOVWF
-                                 ; por vuelta reducía el tiempo; se ajusta el contador
-    #define CNT_INT   167        ; Cambió de 166 → 167: la última iteración del DECFSZ
-                                 ; toma 2 ciclos (con salto) en lugar de 1; se compensa
+    ; CNT_EXT y CNT_INT no cambian respecto a V 2.0.
+    ; El cambio de frecuencia no afecta su valor porque
+    ; el overhead por instrucción se compensa igual.
+    ; Solo cambia cuántos ciclos vale cada uno en tiempo.
+    #define CNT_EXT   142        ; Sin cambio: el overhead relativo es independiente
+                                 ; de la frecuencia; solo cambia el tiempo por ciclo
+    #define CNT_INT   167        ; Sin cambio: misma razón que CNT_EXT
 
-    ; El contador maestro es el único que cambia entre
-    ; retardos, lo que facilita el escalado del tiempo.
-    #define CNT_M_1S  14         ; Cambió de 10 → 14: recalculado con overhead real
-                                 ; incluye ciclos de CALL, RETURN y ambos MOVFF
-    #define CNT_M_2S  28         ; Cambió de 20 → 28: doble exacto de CNT_M_1S
+    ; Al pasar de 8 MHz a 4 MHz el T_ciclo se duplica,
+    ; así que el contador maestro se divide a la mitad
+    ; para mantener el mismo tiempo total.
+    #define CNT_M_1S  7          ; Cambió de 14 → 7: T_ciclo se duplicó (4 MHz),
+                                 ; así el maestro se divide a la mitad para compensar
+    #define CNT_M_2S  14         ; Cambió de 28 → 14: mismo criterio, doble de CNT_M_1S
 
     ;=======================================================
     ; Vector de Reset
@@ -106,6 +111,14 @@
     PSECT  main_code, class=CODE, reloc=2
 
 Inicio:
+    ; Fijar explícitamente la frecuencia a 4 MHz.
+    ; OSCCON bits 6:4 (IRCF) = 110 → 4 MHz.
+    ; Sin esta línea el PIC puede arrancar a una
+    ; frecuencia distinta dependiendo del entorno.
+    MOVLW   0x60                 ; 0x60 = 0110 0000: IRCF=110 selecciona 4 MHz
+                                 ; sin esto OSCCON queda en su valor de reset
+    MOVWF   OSCCON               ; escribe la frecuencia; el fuse solo no lo hace
+
     CLRF    TRISB                ; PORTB como salida
     CLRF    LATB                 ; LED inicialmente apagado
 
@@ -124,9 +137,9 @@ Loop:
 
     ;=======================================================
     ; Subrutina: Retardo de 1 Segundo
-    ; Los valores de los contadores fueron recalculados
-    ; ciclo a ciclo para compensar el overhead real de
-    ; cada instrucción en los tres niveles de bucle.
+    ; Misma estructura de tres bucles anidados que en
+    ; versiones anteriores. El ajuste a 4 MHz solo
+    ; implicó reducir CNT_M_1S de 14 a 7.
     ;=======================================================
 Retardo_1s:
     MOVFF   WREG, W_Backup       ; Preservar W
