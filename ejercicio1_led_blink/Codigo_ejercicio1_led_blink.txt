@@ -1,6 +1,6 @@
 ;=========================================================
 ; Código en Assembler para PIC18F4550
-; V 1.0
+; V 2.0
 ; Parpadeo de LED en RB0:
 ;   - 1 segundo ENCENDIDO
 ;   - 2 segundos APAGADO
@@ -9,33 +9,48 @@
 ; Ensamblador: MPLAB XC8 3.0
 ;
 ; Comentario de versión:
-; Aquí añadimos el loop maestro. Esto lo hacemos con el fin de
-; poder alcanzar retardos del orden de segundos con contadores 
-; de 8 bits. Con este tercer loop podemos hacer una mejor 
-; aproximación al segundo que nos servira despues en los 
-; siguientes puntos del proyecto.
+; En la versión anterior los retardos no eran precisos.
+; La fórmula que usábamos ignoraba los ciclos reales de
+; instrucciones como MOVLW, MOVWF, GOTO y la diferencia
+; del DECFSZ al saltar (2 ciclos) vs no saltar (1 ciclo).
+; Ese overhead acumulado hacía que los tiempos fueran
+; mayores de lo calculado.
 ;
-; === CÁLCULO DE RETARDOS ===
-; En PIC18 cada instrucción toma 4 ciclos de reloj:
-;   T_ciclo = 4 / 8,000,000 Hz = 0.5 µs por ciclo de instrucción
+; En esta versión se recalcularon los contadores usando
+; un análisis ciclo a ciclo de cada instrucción, incluyendo
+; todos los overheads. Los nuevos valores son más precisos
+; que los de la versión anterior.
 ;
-; Se usa una estructura de 3 bucles anidados:
-;   Maestro × Externo × Interno
+; === CÁLCULO CORREGIDO (ciclo a ciclo) ===
+; T_ciclo = 4 / 8,000,000 Hz = 0.5 µs
 ;
-; Fórmula aproximada:
-;   t ≈ CNT_MASTER × CNT_EXT × CNT_INT × 6 × 0.5 µs
+; LoopInterno (167 iteraciones):
+;   iter 1-166: NOP+NOP+NOP+DECFSZ(no salta)+GOTO = 6 ciclos
+;   iter 167:   NOP+NOP+NOP+DECFSZ(salta)         = 5 ciclos
+;   Total = (166×6 + 5) = 1,001 ciclos × 0.5µs = 500.5 µs
 ;
-; El factor 6 proviene del cuerpo del bucle interno
-; (NOPs + DECFSZ + GOTO).
+; LoopExterno (142 iteraciones):
+;   iter 1-141: MOVLW(1)+MOVWF(1)+LoopInt(1001)+DECFSZ(1)+GOTO(2) = 1,006 c
+;   iter 142:   MOVLW(1)+MOVWF(1)+LoopInt(1001)+DECFSZ(salta,2)   = 1,005 c
+;   Total = (141×1,006 + 1,005) = 142,851 ciclos × 0.5µs = 71,425.5 µs
 ;
-; --- Retardo 1 segundo ---
-;   10 × 200 × 166 × 6 × 0.5 µs = 996,000 µs ≈ 1.0 s
+; LoopMaestro para 1s (14 iteraciones):
+;   iter 1-13: MOVLW(1)+MOVWF(1)+LoopExt(142851)+DECFSZ(1)+GOTO(2) = 142,856 c
+;   iter 14:   MOVLW(1)+MOVWF(1)+LoopExt(142851)+DECFSZ(salta,2)   = 142,855 c
+;   Total = (13×142,856 + 142,855) = 1,999,983 ciclos
 ;
-; --- Retardo 2 segundos ---
-;   20 × 200 × 166 × 6 × 0.5 µs = 1,992,000 µs ≈ 2.0 s
+; Overhead subrutina:
+;   CALL(2)+MOVFF(2)+MOVLW(1)+MOVWF(1)+LoopMaestro+MOVFF(2)+RETURN(2)
+;   Total ≈ 1,999,993 ciclos × 0.5µs = 999,996.5 µs ≈ 1.000 s
 ;
-; El pequeño error restante se compensa con el overhead
-; natural de los bucles. Estos valores se refinan después.
+; Para 2s: CNT_M_2S = 28 (el doble exacto de 14)
+;   Total ≈ 3,999,977 ciclos × 0.5µs = 1,999,988.5 µs ≈ 2.000 s
+;
+; Nota: a pesar del recálculo, en hardware el tiempo seguía
+; siendo el doble del esperado, por lo que se llego a una posible solución
+; relacionada con la frecuecia de procesamiento.
+; En la siguiente versión se recalculara el tiempo suponiendo que la frecuencia 
+; es de 4MHz 
 ;=========================================================
 
     #include <xc.inc>
@@ -53,17 +68,19 @@
     ;=======================================================
     #define LED_PIN   0          ; LED conectado en RB0
 
-    ; Contadores comunes a ambos retardos
-    ; Se mantienen iguales para que el ajuste fino
-    ; dependa solo del contador maestro
-    #define CNT_EXT   200        ; Bucle externo
-    #define CNT_INT   166        ; Bucle interno (define el ciclo base)
+    ; Contadores comunes a ambos retardos.
+    ; Estos valores surgen del análisis ciclo a ciclo
+    ; e incluyen la corrección por overhead de bucles.
+    #define CNT_EXT   142        ; Cambió de 200 → 142: el overhead de MOVLW+MOVWF
+                                 ; por vuelta reducía el tiempo; se ajusta el contador
+    #define CNT_INT   167        ; Cambió de 166 → 167: la última iteración del DECFSZ
+                                 ; toma 2 ciclos (con salto) en lugar de 1; se compensa
 
-    ; Contador maestro
-    ; Introducido en esta versión para ampliar el rango
-    ; temporal más allá de lo posible con solo dos bucles
-    #define CNT_M_1S  10         ; ≈ 1 segundo
-    #define CNT_M_2S  20         ; ≈ 2 segundos
+    ; El contador maestro es el único que cambia entre
+    ; retardos, lo que facilita el escalado del tiempo.
+    #define CNT_M_1S  14         ; Cambió de 10 → 14: recalculado con overhead real
+                                 ; incluye ciclos de CALL, RETURN y ambos MOVFF
+    #define CNT_M_2S  28         ; Cambió de 20 → 28: doble exacto de CNT_M_1S
 
     ;=======================================================
     ; Vector de Reset
@@ -98,32 +115,32 @@ Inicio:
     ;-------------------------------------------------------
 Loop:
     BSF     LATB, LED_PIN        ; Encender LED
-    CALL    Retardo_1s           ; Retardo aproximado de 1 segundo
+    CALL    Retardo_1s           ; Retardo de 1 segundo
 
     BCF     LATB, LED_PIN        ; Apagar LED
-    CALL    Retardo_2s           ; Retardo aproximado de 2 segundos
+    CALL    Retardo_2s           ; Retardo de 2 segundos
 
     GOTO    Loop                 ; Ejecución continua
 
     ;=======================================================
     ; Subrutina: Retardo de 1 Segundo
-    ; Aquí se usa por primera vez el loop maestro.
-    ; Su función es multiplicar el tiempo alcanzable
-    ; sin cambiar la estructura interna del retardo.
+    ; Los valores de los contadores fueron recalculados
+    ; ciclo a ciclo para compensar el overhead real de
+    ; cada instrucción en los tres niveles de bucle.
     ;=======================================================
 Retardo_1s:
-    MOVFF   WREG, W_Backup       ; Preservar W (buena práctica)
+    MOVFF   WREG, W_Backup       ; Preservar W
 
     MOVLW   CNT_M_1S
-    MOVWF   ContadorMaestro     ; Inicializar bucle maestro
+    MOVWF   ContadorMaestro
 
 Loop1s_Maestro:
     MOVLW   CNT_EXT
-    MOVWF   ContadorExterno     ; Bucle de nivel medio
+    MOVWF   ContadorExterno
 
 Loop1s_Externo:
     MOVLW   CNT_INT
-    MOVWF   ContadorInterno     ; Bucle interno (ciclo base)
+    MOVWF   ContadorInterno
 
 Loop1s_Interno:
     NOP                          ; Ajuste fino de tiempo
@@ -144,8 +161,8 @@ Loop1s_Interno:
     ;=======================================================
     ; Subrutina: Retardo de 2 Segundos
     ; Misma estructura que el retardo de 1 s.
-    ; Solo cambia el contador maestro, lo que
-    ; facilita el escalado del tiempo.
+    ; Solo cambia el contador maestro, que al ser el
+    ; doble exacto de CNT_M_1S garantiza el doble de tiempo.
     ;=======================================================
 Retardo_2s:
     MOVFF   WREG, W_Backup
