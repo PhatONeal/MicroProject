@@ -1,16 +1,17 @@
-Base para subir los commits
-git init
-git add .
-git commit -m "Primer commit"
-git branch -M main
-git remote add origin https://github.com/USUARIO/NOMBRE_DEL_REPO.git
-git push -u origin main
-git switch -c Branch_Edward
-git add .
-git commit -m "Primer commit en Branch_Edward"
-git push -u origin Branch_Edward
+Presentación
 
-Para subir cada actualizacion del codigo
-git add.
-git commit -m "Commit n"
-git push
+Soy Edward Camilo Tabango López, estudiante de Ingeniería Electrónica y Telecomunicaciones.
+
+En este archivo presento el primer proyecto de la materia Microcontroladores. Este documento
+funciona como una prueba inicial del correcto funcionamiento de mi repositorio local y, a su vez,
+como un primer acercamiento a lo que podría considerarse una presentación formal de mi trabajo.
+
+Consideré eliminar este archivo, principalmente porque no aporta contenido técnico directo al
+proyecto. Sin embargo, decidí conservarlo como registro personal del proceso, ya que representa
+la primera vez en mucho tiempo que me sentí genuinamente motivado y satisfecho estudiando y
+desarrollando algo relacionado con las computadoras.
+
+Este archivo queda como testimonio del inicio del proyecto y como recuerdo de los primeros commits
+realizados de forma consciente y estructurada.
+
+Para quien lea esto: díganme fantasma jsjsjs.
