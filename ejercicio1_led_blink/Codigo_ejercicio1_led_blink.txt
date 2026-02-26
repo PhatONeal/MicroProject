@@ -1,15 +1,31 @@
-Punto de partida
-Tomaremos el código proporcionado en la sección "Asembler" de trabajo de clase
-como punto de partida para el desarrollo de los tres puntos, principalmente por
-que todos parten de una premisa parecida.
-De momento este sera nuestro punto de partida.
-
 ;=========================================================
 ; Código en Assembler para PIC18F4550
-; Parpadeo de LED en RB0 cada 1 segundo
-; Usa retardos sin interrupciones ni Timer0
-; Frecuencia: 8 MHz (Oscilador Interno)
-; Ensamblador: MPLAB XC8 3.0
+; Punto de partida: código base del profesor
+;
+; Cambios principales:
+; - Se implementa un retardo largo usando dos contadores
+; - Se separa el retardo en una subrutina reutilizable
+; - Se empieza a estructurar el programa por secciones
+;
+; Nota:
+; Esta versión aún NO cumple todos los requerimientos finales del ejercicio.
+; Por ahora estoy adaptando el código a un estilo más acorde a mi forma de
+; trabajar y documentar los avances.
+;
+; Aclaración:
+; En la clase del día 25/02/2026 desarrollé una versión bastante más avanzada
+; del proyecto. Sin embargo, mi compuatdora no funciona con el WiFi de la
+; universidad y, además, todavía no tenía Git correctamente configurado,
+; por lo que no pude subir los commits en ese momento.
+;
+; En los proximos commits subiré las 4 versiones que desarrollé ese día
+; (2 del Ejercicio 1 y 2 del Ejercicio 2). Ahora que el entorno ya está
+; configurado, planeo subir los demás commits en las horas de la noche, 
+; cuando llegue de la universidad.
+;
+; Esta seria la versión funcional del primer ejercicio presentado para 
+; desarrollar en clase.
+;
 ;=========================================================
 
     #include <xc.inc>   ; Incluir definiciones del ensamblador para PIC18F4550
