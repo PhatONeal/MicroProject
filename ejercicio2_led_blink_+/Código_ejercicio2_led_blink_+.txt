@@ -1,0 +1,135 @@
+;=========================================================
+; Código en Assembler para PIC18F4550
+; Ejercicio 2: Led Blink+
+; V 1.0
+; Parpadeo de LED en RB0:
+;   - 5 repeticiones de 1s ON + 1s OFF
+;   - Reinicia la secuencia
+;
+; Frecuencia: 4 MHz (Oscilador Interno)
+; Ensamblador: MPLAB XC8 3.0
+;=========================================================
+
+    #include <xc.inc>
+
+    ;=======================================================
+    ; Configuración de Fuses
+    ;=======================================================
+    CONFIG  FOSC = INTOSCIO_EC   ; Oscilador interno
+    CONFIG  WDT  = OFF           ; Watchdog deshabilitado
+    CONFIG  LVP  = OFF           ; Sin programación en bajo voltaje
+    CONFIG  PBADEN = OFF         ; PORTB digital desde reset
+
+    ;=======================================================
+    ; Constantes simbólicas
+    ;=======================================================
+    #define LED_PIN      0       ; LED conectado en RB0
+
+    ; Sin cambios respecto a EJ1 V 3.0
+    #define CNT_EXT      142     ; Bucle externo
+    #define CNT_INT      167     ; Bucle interno
+    #define CNT_M_1S     7       ; Maestro → ≈ 1.000 s @ 4 MHz
+
+    ; Nuevo en esta versión: cantidad de parpadeos del bloque
+    #define PARPADEOS    5       ; 5 repeticiones antes de reiniciar
+
+    ;=======================================================
+    ; Vector de Reset
+    ;=======================================================
+    PSECT  resetVec, class=CODE, reloc=2
+    ORG     0x00
+    GOTO    Inicio
+
+    ;=======================================================
+    ; Vectores de interrupción (no usados)
+    ;=======================================================
+    PSECT  highIntVec, class=CODE, reloc=2
+    ORG     0x08
+    RETFIE
+
+    PSECT  lowIntVec, class=CODE, reloc=2
+    ORG     0x18
+    RETFIE
+
+    ;=======================================================
+    ; Código Principal
+    ;=======================================================
+    PSECT  main_code, class=CODE, reloc=2
+
+Inicio:
+    MOVLW   0x60                 ; IRCF=110 → fijar 4 MHz en OSCCON
+    MOVWF   OSCCON
+    CLRF    TRISB                ; PORTB como salida
+    CLRF    LATB                 ; LED inicialmente apagado
+
+    ;-------------------------------------------------------
+    ; Secuencia principal: se repite indefinidamente
+    ;-------------------------------------------------------
+Secuencia:
+    ; Nuevo respecto a EJ1 V 3.0: cargar el contador antes
+    ; de entrar al bucle para habilitar el conteo de ciclos
+    MOVLW   PARPADEOS            ; Cargar 5 en W
+    MOVWF   ContadorParpadeos    ; Inicializar contador de repeticiones
+
+    ;-------------------------------------------------------
+    ; Bloque de parpadeo: 5 × (1s ON + 1s OFF)
+    ;-------------------------------------------------------
+BloqueLoop:
+    BSF     LATB, LED_PIN        ; Encender LED
+    CALL    Retardo_1s           ; 1 segundo encendido
+
+    BCF     LATB, LED_PIN        ; Apagar LED
+    CALL    Retardo_1s           ; 1 segundo apagado
+
+    ; Nuevo respecto a EJ1 V 3.0: en lugar de GOTO Loop
+    ; se decrementa el contador y solo se repite si no llegó a 0
+    DECFSZ  ContadorParpadeos, F ; Decrementar; si llega a 0, salta
+    GOTO    BloqueLoop           ; Si no, repetir parpadeo
+
+    GOTO    Secuencia            ; Reiniciar secuencia completa
+
+    ;=======================================================
+    ; Subrutina: Retardo de 1 Segundo
+    ; Sin cambios respecto a EJ1 V 3.0
+    ;=======================================================
+Retardo_1s:
+    MOVFF   WREG, W_Backup       ; Preservar W
+
+    MOVLW   CNT_M_1S
+    MOVWF   ContadorMaestro
+
+Loop1s_Maestro:
+    MOVLW   CNT_EXT
+    MOVWF   ContadorExterno
+
+Loop1s_Externo:
+    MOVLW   CNT_INT
+    MOVWF   ContadorInterno
+
+Loop1s_Interno:
+    NOP                          ; Ajuste fino de tiempo
+    NOP
+    NOP
+    DECFSZ  ContadorInterno, F
+    GOTO    Loop1s_Interno
+
+    DECFSZ  ContadorExterno, F
+    GOTO    Loop1s_Externo
+
+    DECFSZ  ContadorMaestro, F
+    GOTO    Loop1s_Maestro
+
+    MOVFF   W_Backup, WREG       ; Restaurar W
+    RETURN
+
+    ;=======================================================
+    ; Variables en RAM
+    ;=======================================================
+    PSECT udata
+ContadorParpadeos:  DS 1         ; Nuevo: cuenta los parpadeos del bloque
+ContadorMaestro:    DS 1         ; Nivel superior del retardo
+ContadorExterno:    DS 1         ; Nivel intermedio
+ContadorInterno:    DS 1         ; Nivel base
+W_Backup:           DS 1         ; Respaldo de WREG
+
+    END
