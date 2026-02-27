@@ -29,6 +29,10 @@
     PSECT  main_code, class=CODE, reloc=2  ; Sección de código principal
 
 Inicio:
+    ; Configurar oscilador interno a 8 MHz
+    MOVLW   0x72
+    MOVWF   OSCCON
+
     CLRF    TRISB       ; Configurar PORTB como salida (0 = salida, 1 = entrada)
     CLRF    LATB        ; Apagar todos los pines de PORTB (LED apagado inicialmente)
 
@@ -51,27 +55,30 @@ Loop:
     ;===============================================
     ; Subrutina de Retardo de 1 Segundo (Aprox.)
     ;===============================================
-
 Retardo_1s:
-    MOVLW   25          ; Cargar el valor 25 en el registro W (contador externo)
-    MOVWF   ContadorExterno  ; Guardar el valor en la variable ContadorExterno
 
-LoopExterno:
-    MOVLW   250         ; Cargar el valor 250 en el registro W (contador interno)
-    MOVWF   ContadorInterno  ; Guardar el valor en la variable ContadorInterno
+    MOVLW   11	; Cargar el valor 11 en el registro W (contador 3)
+    MOVWF   Contador3	; Guardar el valor en la variable Contador3
 
-LoopInterno:
-    NOP                 ; No hacer nada (consume un ciclo de instrucción)
-    NOP                 ; No hacer nada (consume otro ciclo)
-    NOP                 ; No hacer nada (consume otro ciclo)
-    
-    DECFSZ  ContadorInterno, F  ; Decrementar ContadorInterno, si es cero, salta la siguiente instrucción
-    GOTO    LoopInterno         ; Si no es cero, repetir el bucle interno
+Loop3:
+    MOVLW   250 ; Cargar el valor 250 en el registro W (contador externo)
+    MOVWF   ContadorExterno ; Guardar el valor en la variable ContadorExterno
 
-    DECFSZ  ContadorExterno, F  ; Decrementar ContadorExterno, si es cero, salta la siguiente instrucción
-    GOTO    LoopExterno         ; Si no es cero, repetir el bucle externo
+Loop2:
+    MOVLW   250 ; Cargar el valor 250 en el registro W (contador interno)
+    MOVWF   ContadorInterno ; Guardar el valor en la variable ContadorInterno
 
-    RETURN              ; Retornar al programa principal después del retardo
+Loop1:
+    DECFSZ  ContadorInterno, F	; Decrementar ContadorInterno, si es cero, salta la siguiente instrucción
+    GOTO    Loop1   ; Si no es cero, repetir el bucle interno
+
+    DECFSZ  ContadorExterno, F	; Decrementar ContadorExterno, si es cero, salta la siguiente instrucción
+    GOTO    Loop2   ; Si no es cero, repetir el bucle interno
+
+    DECFSZ  Contador3, F    ; Decrementar Contador3, si es cero, salta la siguiente instrucción
+    GOTO    Loop3   ; Si no es cero, repetir el bucle interno
+
+    RETURN  ; Retornar al programa principal después del retardo
 
     ;===============================================
     ; Definición de Variables
@@ -80,5 +87,5 @@ LoopInterno:
     PSECT udata  ; Sección de datos sin inicializar (variables en RAM)
 ContadorExterno:   DS 1   ; Reserva 1 byte de memoria para el contador externo
 ContadorInterno:   DS 1   ; Reserva 1 byte de memoria para el contador interno
-
+Contador3: DS 1
     END            ; Fin del código
