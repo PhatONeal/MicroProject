@@ -1,176 +1,197 @@
 ;=========================================================
 ; Código en Assembler para PIC18F4550
 ; Ejercicio 3: Led Sequence
-; V 1.0
+; V 2.0
 ;
 ; Hardware:
-;   LEDs    : RB0-RB4 (5 LEDs, salidas)
+;   LEDs               : RB0-RB4 (5 LEDs, salidas)
 ;   Pulsador secuencia : RA0 (entrada, pull-up externo)
 ;   Pulsador velocidad : RA1 (entrada, pull-up externo)
 ;
 ; Frecuencia: 4 MHz (Oscilador Interno)
 ; Ensamblador: MPLAB XC8 3.0
 ;
+; Comentario de version:
+; V 1.0 usaba retardo por software: la CPU quedaba
+; bloqueada contando ciclos y no podía leer pulsadores
+; ni reaccionar a eventos externos durante ese tiempo.
+; Se reemplaza por Timer0 con interrupción para que
+; el tiempo corra en hardware y la CPU quede libre.
+; El comportamiento visual es identico a V 1.0.
+;
+; === CÁLCULO DE TIMER0 ===
+; Configuración: 16 bits, prescaler 1:256, 4 MHz
+;   T_ciclo     = 1.0 µs
+;   T_por_cuenta = 1.0 µs × 256 = 256 µs
+;   Cuentas para 100 ms = 100,000 / 256 = 391
+;   Preload = 65,536 - 391 = 65,145 = 0xFE79
+;
+; Velocidades (ticks de 100 ms por paso):
+;   Rápida : 2 ticks = 200 ms
+;   Normal : 5 ticks = 500 ms
+;   Lenta  : 10 ticks = 1 s
 ;=========================================================
 
     #include <xc.inc>
 
     
     ; Configuración de Fuses
- 
-    CONFIG  FOSC = INTOSCIO_EC   ; Oscilador interno
-    CONFIG  WDT  = OFF           ; Watchdog deshabilitado
-    CONFIG  LVP  = OFF           ; Sin programación en bajo voltaje
-    CONFIG  PBADEN = OFF         ; PORTB digital desde reset
-
-   
-    ; Constantes simbólicas
     
-
-    ; --- Pines de LEDs ---
-    #define LED_TODOS    0x1F    ; 0001 1111: RB0-RB4 encendidos
-    #define LED_APAGADOS 0x00    ; 0000 0000: todos apagados
-
-    ; --- Pines de pulsadores (PORTA) ---
-    ; Pull-up externo: pin en alto normalmente, bajo al presionar
-    #define PIN_SEQ      0       ; RA0 -> pulsador de secuencia
-    #define PIN_VEL      1       ; RA1 -> pulsador de velocidad
-
-    ; --- Contadores de retardo (compartidos) ---
-    #define CNT_EXT      142     ; Bucle externo
-    #define CNT_INT      167     ; Bucle interno
-
-    ; --- Valores del contador maestro según velocidad ---
-    #define CNT_M_CORTO  2       ; ? 0.3 s (para verificar RA0)
-    #define CNT_M_NORMAL 7       ; ? 1.0 s (velocidad base)
-    #define CNT_M_LARGO  14      ; ? 2.0 s (para verificar RA1)
+    CONFIG  FOSC   = INTOSCIO_EC
+    CONFIG  CPUDIV = OSC1_PLL2
+    CONFIG  USBDIV = 1
+    CONFIG  WDT    = OFF
+    CONFIG  WDTPS  = 32768
+    CONFIG  LVP    = OFF
+    CONFIG  PBADEN = OFF
+    CONFIG  MCLRE  = ON
+    CONFIG  STVREN = ON
+    CONFIG  XINST  = OFF
 
    
+    ; Constantes
+    
+    #define PIN_SEQ      0       ; RA0: pulsador de secuencia
+    #define PIN_VEL      1       ; RA1: pulsador de velocidad
+
+    #define T0_HIGH      0xFE   ; Preload Timer0 (byte alto) ? tick cada 100 ms
+    #define T0_LOW       0x79   ; Preload Timer0 (byte bajo)
+
+    #define VEL_RAPIDA   2
+    #define VEL_NORMAL   5
+    #define VEL_LENTA    10
+
+    #define LED_TODOS    0x1F   ; RB0-RB4 encendidos
+
+    #define FLAG_PASO    0      ; Bit 0 de Flags: ISR avisa al loop que avance
+
+    
     ; Vector de Reset
     
     PSECT  resetVec, class=CODE, reloc=2
     ORG     0x00
     GOTO    Inicio
 
-    
-    ; Vectores de interrupción (no usados)
-    
+    ;=======================================================
+    ; Vectores de interrupción
+    ; Alta prioridad apunta a la ISR real (antes era RETFIE)
+    ;=======================================================
     PSECT  highIntVec, class=CODE, reloc=2
     ORG     0x08
-    RETFIE
+    GOTO    ISR_Timer0
 
     PSECT  lowIntVec, class=CODE, reloc=2
     ORG     0x18
     RETFIE
 
-   
+    ;=======================================================
+    ; ISR — Rutina de Servicio de Interrupción de Timer0
+    ; Se ejecuta cada 100 ms cuando Timer0 desborda.
+    ; Se desarrolla buscando:
+    ;   1. Preservar contexto (W, STATUS, BSR)
+    ;   2. Verificar y limpiar flag TMR0IF
+    ;   3. Recargar Timer0 con el preload
+    ;   4. Incrementar TickCount y activar FLAG_PASO
+    ;      cuando llega a VelocidadActual
+    ;=======================================================
+    PSECT  isr_code, class=CODE, reloc=2
+
+ISR_Timer0:
+    MOVFF   WREG, W_ISR          ; Preservar contexto: la ISR puede
+    MOVFF   STATUS, STATUS_ISR   ; interrumpir cualquier instrucción
+    MOVFF   BSR, BSR_ISR         ; del loop principal
+
+    BTFSS   INTCON, 2, A         ; TMR0IF=1? (¿es interrupción de Timer0?)
+    GOTO    ISR_Exit             ; No: salir sin actuar
+    BCF     INTCON, 2, A         ; Limpiar TMR0IF o la ISR se repetiría al retornar
+
+    MOVLW   T0_HIGH              ; Recargar preload: sin esto el próximo
+    MOVWF   TMR0H, A             ; tick tardaría 65,536 cuentas en lugar de 391
+    MOVLW   T0_LOW
+    MOVWF   TMR0L, A             ; TMR0H solo se aplica al escribir TMR0L
+
+    INCF    TickCount, F, A
+    MOVF    VelocidadActual, W, A
+    CPFSEQ  TickCount, A         ; ¿TickCount == VelocidadActual?
+    GOTO    ISR_Exit             ; No: aún no es tiempo de avanzar
+
+    CLRF    TickCount, A
+    BSF     Flags, FLAG_PASO, A  ; Sí: avisar al loop principal
+
+ISR_Exit:
+    MOVFF   BSR_ISR, BSR
+    MOVFF   STATUS_ISR, STATUS
+    MOVFF   W_ISR, WREG
+    RETFIE  1                    ; 1 = FAST: restaura W, STATUS y BSR del shadow register
+
+    
     ; Código Principal
-   
+    
     PSECT  main_code, class=CODE, reloc=2
 
 Inicio:
-    MOVLW   0x60                 ; IRCF=110 ? fijar 4 MHz
-    MOVWF   OSCCON
+    MOVLW   0x60
+    MOVWF   OSCCON, A            ; IRCF=110 ? 4 MHz
 
-    ; --- Configurar PORTB: RB0-RB4 como salidas ---
-    ; TRISB = 1110 0000 -> RB0-RB4 salidas, RB5-RB7 entradas
-    MOVLW   0xE0                 ; 1110 0000
-    MOVWF   TRISB
-    CLRF    LATB                 ; LEDs apagados al inicio
+    MOVLW   0xE0                 ; 1110 0000: RB0-RB4 salidas, RB5-RB7 entradas
+    MOVWF   TRISB, A
+    CLRF    LATB, A
 
-    ; --- Configurar PORTA: RA0 y RA1 como entradas ---
-    ; TRISA = 1111 1111 -> todo PORTA como entrada
-    ; (pull-up externo mantiene los pines en alto)
-    MOVLW   0xFF                 ; 1111 1111
-    MOVWF   TRISA
+    MOVLW   0xFF
+    MOVWF   TRISA, A             ; Todo PORTA como entrada
 
+    CLRF    TickCount, A
+    CLRF    Flags, A
+    MOVLW   VEL_NORMAL
+    MOVWF   VelocidadActual, A
+
+    ; T0CON = 1000 0111
+    ;   Bit 7 (TMR0ON) = 1 : encendido
+    ;   Bit 6 (T08BIT) = 0 : modo 16 bits
+    ;   Bit 5 (T0CS)   = 0 : reloj interno
+    ;   Bit 3 (PSA)    = 0 : prescaler activo
+    ;   Bits 2:0       = 111: prescaler 1:256
     
-    ; Bucle principal de prueba:
-    ; Enciende todos los LEDs -> espera -> apaga -> espera
-    ; La duración del retardo depende de los pulsadores
-    
+    MOVLW   0x87
+    MOVWF   T0CON, A
+
+    MOVLW   T0_HIGH
+    MOVWF   TMR0H, A
+    MOVLW   T0_LOW
+    MOVWF   TMR0L, A
+
+    BSF     INTCON, 2, A         ; TMR0IE: habilitar interrupción de Timer0
+    BSF     INTCON, 6, A         ; PEIE: habilitar periféricos
+    BSF     INTCON, 7, A         ; GIE: interruptor maestro (sin esto nada interrumpe)
+
+    ;=======================================================
+    ; Loop principal
+    ; Ya no espera en un retardo: solo revisa FLAG_PASO
+    ; que la ISR activa cada vez que se cumple el tiempo.
+    ;=======================================================
 Loop:
-    MOVLW   LED_TODOS
-    MOVWF   LATB                 ; Encender RB0-RB4
+    BTFSS   Flags, FLAG_PASO, A  ; FLAG_PASO=1? (¿avisó la ISR?)
+    GOTO    Loop
 
-    CALL    Retardo_Variable     ; Esperar según pulsadores
+    BCF     Flags, FLAG_PASO, A  ; Limpiar antes de procesar
 
-    MOVLW   LED_APAGADOS
-    MOVWF   LATB                 ; Apagar RB0-RB4
-
-    CALL    Retardo_Variable     ; Esperar según pulsadores
+    MOVF    LATB, W, A
+    XORLW   0x1F                 ; Invertir RB0-RB4 (mismo efecto que V 1.0)
+    ANDLW   0x1F
+    MOVWF   LATB, A
 
     GOTO    Loop
 
-   
-    ; Subrutina: Retardo Variable
-    ; Lee RA0 y RA1 para decidir la duración del retardo.
-    ; Pull-up externo: el pin está en alto normalmente
-    ; y baja a 0 al presionar. Por eso se usa BTFSS
-    ; (salta si el bit está en 1, es decir, NO presionado).
-    ;
-    ;   RA0 presionado -> retardo corto  (? 0.3 s)
-    ;   RA1 presionado -> retardo largo  (? 2.0 s)
-    ;   ninguno        -> retardo normal (? 1.0 s)
-    
-Retardo_Variable:
-    MOVFF   WREG, W_Backup       ; Preservar W
-
-    ; Verificar RA0 (pulsador de secuencia)
-    BTFSS   PORTA, PIN_SEQ       ; Salta si RA0=1 (no presionado)
-    GOTO    Vel_Corta            ; RA0=0 -> presionado -> retardo corto
-
-    ; Verificar RA1 (pulsador de velocidad)
-    BTFSS   PORTA, PIN_VEL       ; Salta si RA1=1 (no presionado)
-    GOTO    Vel_Larga            ; RA1=0 -> presionado -> retardo largo
-
-    ; Ningún pulsador presionado -> velocidad normal
-    MOVLW   CNT_M_NORMAL         ; W = 7
-    GOTO    Ejecutar_Retardo
-
-Vel_Corta:
-    MOVLW   CNT_M_CORTO          ; W = 2
-    GOTO    Ejecutar_Retardo
-
-Vel_Larga:
-    MOVLW   CNT_M_LARGO          ; W = 14
-
-Ejecutar_Retardo:
-    MOVWF   ContadorMaestro      ; Cargar el valor elegido
-
-Loop_Maestro:
-    MOVLW   CNT_EXT
-    MOVWF   ContadorExterno
-
-Loop_Externo:
-    MOVLW   CNT_INT
-    MOVWF   ContadorInterno
-
-Loop_Interno:
-    NOP                          ; Ajuste fino de tiempo
-    NOP
-    NOP
-    DECFSZ  ContadorInterno, F
-    GOTO    Loop_Interno
-
-    DECFSZ  ContadorExterno, F
-    GOTO    Loop_Externo
-
-    DECFSZ  ContadorMaestro, F
-    GOTO    Loop_Maestro
-
-    MOVFF   W_Backup, WREG       ; Restaurar W
-    RETURN
-
     
     ; Variables en RAM
- 
+   
     PSECT udata
-ContadorMaestro:    DS 1         ; Nivel superior del retardo
-ContadorExterno:    DS 1         ; Nivel intermedio
-ContadorInterno:    DS 1         ; Nivel base
-W_Backup:           DS 1         ; Respaldo de WREG
+TickCount:      DS 1             ; Ticks desde el último paso
+VelocidadActual: DS 1            ; Ticks necesarios por paso
+Flags:          DS 1             ; Bit 0 = FLAG_PASO
+
+W_ISR:          DS 1             ; Contexto ISR
+STATUS_ISR:     DS 1
+BSR_ISR:        DS 1
 
     END
-
-
