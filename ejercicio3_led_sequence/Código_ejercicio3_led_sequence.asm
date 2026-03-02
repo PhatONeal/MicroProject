@@ -1,20 +1,19 @@
 ;=========================================================
 ; Código en Assembler para PIC18F4550
 ; Ejercicio 3: Led Sequence
-; V 4.0
+; V 4.1
 ;
 ; Hardware:
 ;   LEDs               : RB0-RB4 (5 LEDs, salidas)
 ;   Pulsador secuencia : RA0 (entrada, pull-up externo)
 ;   Pulsador velocidad : RA1 (entrada, pull-up externo)
 ;
-; Frecuencia: 4 MHz (Oscilador Interno)
+; Frecuencia: 4 MHz
 ; Ensamblador: MPLAB XC8 v2.20
 ;
 ; Comentario de versión:
 ; V 3.0 tenía las secuencias 1 y 2 funcionando. Se agregan
-; las secuencias 3 y 4 para completar los 4 efectos del
-; ejercicio. Los pulsadores siguen sin estar activos.
+; las secuencias 3 y 4. Los pulsadores siguen sin estar activos.
 ;
 ; Secuencia 3 — Parpadeo alternado:
 ;   LEDs pares (RB0,RB2,RB4) e impares (RB1,RB3) alternan.
@@ -22,39 +21,37 @@
 ;
 ; Secuencia 4 — Contador binario:
 ;   Los 5 LEDs cuentan de 0 a 31 (00000?11111).
-;   ADDLW 1 + ANDLW 0x1F incrementa y limita a 5 bits:
-;   al llegar a 32 (0x20) la máscara devuelve 0 ? reinicia.
+;   ADDLW 1 + ANDLW 0x1F incrementa y limita a 5 bits.
 ;
-; === TIMER0 ===
-; Sin cambios respecto a versiones anteriores.
+; === TIMER0 (8 bits) ===
+; T0CON = 0xC7: modo 8 bits, prescaler 1:256
+; Preload = 6 ? (256-6) × 256µs = 64ms por tick
+; VEL_NORMAL = 8 ticks ? 512ms por paso
 ;=========================================================
 
     #include <xc.inc>
 
-   
-    ; Configuración de Fuses
-    
-    CONFIG  FOSC   = INTOSCIO_EC
+    CONFIG  FOSC   = HS
     CONFIG  CPUDIV = OSC1_PLL2
     CONFIG  USBDIV = 1
     CONFIG  WDT    = OFF
     CONFIG  WDTPS  = 32768
     CONFIG  LVP    = OFF
     CONFIG  PBADEN = OFF
-    CONFIG  MCLRE  = ON
+    CONFIG  MCLRE  = OFF
     CONFIG  STVREN = ON
     CONFIG  XINST  = OFF
 
-   
+    
     ; Constantes
-   
+    
     #define PIN_SEQ         0
     #define PIN_VEL         1
 
-    #define T0_HIGH         0xFE
-    #define T0_LOW          0x79
+    #define T0_PRELOAD      6
 
-    #define VEL_NORMAL      5
+    ;Se cambio la velocidad a 8 ticks × 64ms = 512ms. Anterior: VEL_NORMAL = 5
+    #define VEL_NORMAL      8
 
     #define FLAG_PASO       0
     #define FLAG_DIR        1
@@ -70,9 +67,9 @@
     #define TOTAL_PASOS_ALT 8
     #define TOTAL_PASOS_BIN 32
 
-    #define MASK_LEDS       0x1F ; RB0-RB4
-    #define MASK_PARES      0x15 ; RB0, RB2, RB4
-    #define MASK_IMPARES    0x0A ; RB1, RB3
+    #define MASK_LEDS       0x1F
+    #define MASK_PARES      0x15    ; RB0, RB2, RB4
+    #define MASK_IMPARES    0x0A    ; RB1, RB3
 
     
     ; Vector de Reset
@@ -81,7 +78,7 @@
     ORG     0x00
     GOTO    Inicio
 
-    
+    ;
     ; Vectores de interrupción
     
     PSECT  highIntVec, class=CODE, reloc=2
@@ -93,7 +90,7 @@
     RETFIE
 
     
-    ; ISR — Sin cambios respecto a V 2.0
+    ; ISR — sin cambios respecto a V 3.0
     
     PSECT  isr_code, class=CODE, reloc=2
 
@@ -106,9 +103,7 @@ ISR_Timer0:
     GOTO    ISR_Exit
     BCF     INTCON, 2, A
 
-    MOVLW   T0_HIGH
-    MOVWF   TMR0H, A
-    MOVLW   T0_LOW
+    MOVLW   T0_PRELOAD
     MOVWF   TMR0L, A
 
     INCF    TickCount, F, A
@@ -125,15 +120,12 @@ ISR_Exit:
     MOVFF   W_ISR, WREG
     RETFIE  1
 
-    
+   
     ; Código Principal
     
     PSECT  main_code, class=CODE, reloc=2
 
 Inicio:
-    MOVLW   0x60
-    MOVWF   OSCCON, A
-
     MOVLW   0xE0
     MOVWF   TRISB, A
     CLRF    LATB, A
@@ -152,20 +144,20 @@ Inicio:
     MOVWF   LATB, A
     BCF     Flags, FLAG_DIR, A
 
-    MOVLW   0x87
+    ; CAMBIO 1: T0CON en modo 8 bits (bit6=1). Anterior: 0x87 (16 bits)
+    ; Se cambio solo el TMR0L. Anterior cargaba también TMR0H = 0xFE
+    MOVLW   0xC7
     MOVWF   T0CON, A
-    MOVLW   T0_HIGH
-    MOVWF   TMR0H, A
-    MOVLW   T0_LOW
+    MOVLW   T0_PRELOAD
     MOVWF   TMR0L, A
 
-    BSF     INTCON, 2, A
+    BSF     INTCON, 5, A
     BSF     INTCON, 6, A
     BSF     INTCON, 7, A
 
     
     ; Loop principal
-    
+   
 Loop:
     BTFSS   Flags, FLAG_PASO, A
     GOTO    Loop
@@ -181,9 +173,9 @@ Loop:
     BZ      Exec_Binario
     GOTO    Loop
 
-    
-    ; SECUENCIA 1: sin cambios respecto a V 3.0
-    
+    ;=======================================================
+    ; SECUENCIA 1: Ping-Pong — sin cambios respecto a V 3.0
+    ;=======================================================
 Exec_PingPong:
     INCF    PasoActual, F, A
     BTFSS   Flags, FLAG_DIR, A
@@ -215,14 +207,12 @@ PP_FinPaso:
     XORLW   TOTAL_PASOS_PP
     BNZ     Loop
     CALL    Siguiente_Secuencia
-    MOVLW   0x01
-    MOVWF   LATB, A
-    BCF     Flags, FLAG_DIR, A
+    CLRF    LATB, A
     GOTO    Loop
 
-    
-    ; SECUENCIA 2: Llenado y Vaciado — sin cambios
-    
+    ;=======================================================
+    ; SECUENCIA 2: Llenado — sin cambios respecto a V 3.0
+    ;=======================================================
 Exec_Llenado:
     MOVF    PasoActual, W, A
     CALL    Tabla_Llenado
@@ -232,15 +222,18 @@ Exec_Llenado:
     XORLW   TOTAL_PASOS_LL
     BNZ     Loop
     CALL    Siguiente_Secuencia
+    MOVLW   MASK_PARES              ; Alternado empieza con pares encendidos
+    MOVWF   LATB, A
     GOTO    Loop
 
-    
+    ;=======================================================
     ; SECUENCIA 3: Parpadeo Alternado
-    ; XOR 0x1F invierte RB0-RB4: pares?impares en cada paso
-    
+    ; XOR 0x1F invierte RB0-RB4 en cada paso: pares?impares.
+    ; Estado inicial (puesto por Exec_Llenado): MASK_PARES.
+    ;=======================================================
 Exec_Alternado:
     MOVF    LATB, W, A
-    XORLW   MASK_LEDS            ; Invertir RB0-RB4
+    XORLW   MASK_LEDS               ; Invertir RB0-RB4
     ANDLW   MASK_LEDS
     MOVWF   LATB, A
     INCF    PasoActual, F, A
@@ -248,31 +241,31 @@ Exec_Alternado:
     XORLW   TOTAL_PASOS_ALT
     BNZ     Loop
     CALL    Siguiente_Secuencia
-    MOVLW   MASK_PARES           ; Reiniciar con pares encendidos
-    MOVWF   LATB, A
+    CLRF    LATB, A                 ; Binario empieza en 0
     GOTO    Loop
 
-    
+    ;=======================================================
     ; SECUENCIA 4: Contador Binario
-    ; ADDLW 1 + ANDLW 0x1F: incrementa y limita a 5 bits.
-    ; Al llegar a 32 (0x20), AND produce 0x00 ? reinicio automático.
-    
+    ; ADDLW 1 + ANDLW 0x1F: al llegar a 32 la máscara
+    ; devuelve 0x00, reiniciando el conteo automáticamente.
+    ;=======================================================
 Exec_Binario:
     MOVF    LATB, W, A
     ADDLW   1
-    ANDLW   MASK_LEDS            ; Limitar a RB0-RB4
+    ANDLW   MASK_LEDS
     MOVWF   LATB, A
     INCF    PasoActual, F, A
     MOVF    PasoActual, W, A
     XORLW   TOTAL_PASOS_BIN
     BNZ     Loop
     CALL    Siguiente_Secuencia
-    CLRF    LATB, A
+    MOVLW   0x01                    ; Ping-pong reinicia en RB0
+    MOVWF   LATB, A
+    BCF     Flags, FLAG_DIR, A
     GOTO    Loop
 
     
-    ; Subrutina: Siguiente_Secuencia
-    ; Avanza SecuenciaActual (0?1?2?3?0) y resetea PasoActual
+    ; Subrutina: Siguiente_Secuencia — sin cambios
     
 Siguiente_Secuencia:
     CLRF    PasoActual, A
@@ -284,7 +277,7 @@ Siguiente_Secuencia:
 Sig_Sec_Fin:
     RETURN
 
-    
+   
     ; Tabla de patrones — Secuencia 2
     
 Tabla_Llenado:
@@ -304,13 +297,13 @@ Tabla_Llenado:
     ; Variables en RAM
     
     PSECT udata
-TickCount:      DS 1
-VelocidadActual: DS 1
-Flags:          DS 1
-SecuenciaActual: DS 1
-PasoActual:     DS 1
-W_ISR:          DS 1
-STATUS_ISR:     DS 1
-BSR_ISR:        DS 1
+TickCount:          DS 1
+VelocidadActual:    DS 1
+Flags:              DS 1
+SecuenciaActual:    DS 1
+PasoActual:         DS 1
+W_ISR:              DS 1
+STATUS_ISR:         DS 1
+BSR_ISR:            DS 1
 
     END
