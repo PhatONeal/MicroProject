@@ -1,6 +1,6 @@
 ;=======================================
-; PIC18F4550 - Prueba inicial
-; LED en RD0, parpadeo simple
+; PIC18F4550 - Secuencia desplazamiento
+; LEDs RD0-RD3, sin botones aun
 ; Oscilador interno 4MHz
 ;=======================================
 
@@ -26,32 +26,51 @@ Inicio:
     MOVLW   0b01100010
     MOVWF   OSCCON
 
-    CLRF    TRISD           ; PORTD todo salidas
+    CLRF    TRISD
     CLRF    LATD
 
-Loop:
-    MOVLW   0b00000001      ; enciende RD0
+    ; PORTB entradas (botones - aun sin usar)
+    MOVLW   0b00000011
+    MOVWF   TRISB
+    CLRF    LATB
+
+Secuencia1:
+    MOVLW   0b00000001      ; RD0
     MOVWF   LATD
-    CALL    Retardo
+    CALL    Retardo_500ms
 
-    CLRF    LATD            ; apaga
-    CALL    Retardo
+    MOVLW   0b00000010      ; RD1
+    MOVWF   LATD
+    CALL    Retardo_500ms
 
-    GOTO    Loop
+    MOVLW   0b00000100      ; RD2
+    MOVWF   LATD
+    CALL    Retardo_500ms
 
-Retardo:
+    MOVLW   0b00001000      ; RD3
+    MOVWF   LATD
+    CALL    Retardo_500ms
+
+    GOTO    Secuencia1
+
+Retardo_500ms:
     MOVLW   2
     MOVWF   ContadorExterno
-Ra: MOVLW   250
+Loop500a:
+    MOVLW   250
     MOVWF   ContadorMedio
-Rb: MOVLW   250
+Loop500b:
+    MOVLW   250
     MOVWF   ContadorInterno
-Rc: DECFSZ  ContadorInterno, F
-    GOTO    Rc
+Loop500c:
+    NOP
+    NOP
+    DECFSZ  ContadorInterno, F
+    GOTO    Loop500c
     DECFSZ  ContadorMedio, F
-    GOTO    Rb
+    GOTO    Loop500b
     DECFSZ  ContadorExterno, F
-    GOTO    Ra
+    GOTO    Loop500a
     RETURN
 
     END
