@@ -1,118 +1,140 @@
-;=========================================================
 ; Código en Assembler para PIC18F4550
 ; Ejercicio 3: Led Sequence
-; V 4.2 — LEDs movidos a RD0-RD4 (puerto D)
+; V 5.0 (parcialmente la final)
 ;
 ; Hardware:
-;   LEDs               : RD0-RD4  (5 LEDs, salidas)
-;   Pulsador secuencia : RB0/INT0 (entrada, pull-up externo a VDD)
-;   Pulsador velocidad : RB1/INT1 (entrada, pull-up externo a VDD)
+;   LEDs     : RB0-RB4 (5 LEDs, salidas)
+;   Pulsador secuencia : RA0 (entrada, pull-up externo)
+;   Pulsador velocidad : RA1 (entrada, pull-up externo)
 ;
-; Oscilador: 4 MHz (HS)
+; Frecuencia: 4 MHz (Oscilador Interno)
+; Ensamblador: MPLAB XC8 2.20
 ;
-; Ventaja de RD vs RC:
-;   RD0-RD7 son GPIO de propósito general en el PIC18F4550.
-;   No comparten función con USB (RC3=SCL, RC4=D-),
-;   por lo que NO se requiere deshabilitar UCON/UCFG.
-;   Solo configurar TRISD = 0xE0 y operar LATD.
-; -------------------------------------------------------
-; TIMER0 — Cálculo de período
-; -------------------------------------------------------
-; Fosc=4MHz ? Tcy=1µs
-; Timer0 modo 8-bit, prescaler 1:256
-; Overflow cada (256-T0_PRELOAD)×256×1µs
-; Con T0_PRELOAD=6: 250×256µs = 64 ms/tick
-;   VEL_NORMAL =  8 ticks ? 512  ms/paso
-;   VEL_RAPIDA =  4 ticks ? 256  ms/paso
-;   VEL_LENTA  = 16 ticks ? 1024 ms/paso
-;=========================================================
+; Secuencias disponibles:
+;   0 – Ping-Pong       : un LED rebota entre RD0 y RD4
+;   1 – Llenado/Vaciado : los LEDs se encienden y apagan en cascada
+;   2 – Alternado       : LEDs pares e impares parpadean en contrafase
+;   3 – Contador Binario: cuenta en binario de 0 a 31
+;
+; Velocidades:
+;   Normal  ?  512 ms/paso  (índice 0, arranque por defecto)
+;   Rápida  ?  256 ms/paso  (índice 1)
+;   Lenta   ? 1024 ms/paso  (índice 2)
+;
+; Timer0:
+;   Modo 8-bit, reloj interno, prescaler 1:256
+;   Fosc = 4 MHz ? Tcy = 1 µs
+;   Overflow cada (256 - T0_PRELOAD) × 256 µs
+;   Con T0_PRELOAD = 6  ?  250 × 256 µs = 64 ms por tick
+;
+; Estado:
+;   Funcional en simulación (MPLAB / Proteus).
+;   NO funcional en hardware físico — pendiente de revisión futura.
+;
+; Historial de versiones:
+;   v9.0  – Secuencia avanzaba automáticamente al terminar cada ciclo.
+;           RB0 (INT0) avanzaba la secuencia en lugar de pausar.
+;   v10.0 – Corrección del comportamiento de avance automático:
+;           · FLAG_CAMBIO reemplaza a FLAG_PAUSA.
+;           · Timer0 ya no dispara cambios de secuencia.
+;           · Cada bloque Exec_* reinicia PasoActual al completar el ciclo
+;             (la misma secuencia se repite indefinidamente).
+;           · RB0 ahora avanza la secuencia de forma manual.
+;   v10.1 – Limpieza general de código y comentarios.
+;=============================================================================
 
     #include <xc.inc>
 
-    ;=======================================================
-    ; Bits de configuración
-    ;=======================================================
+;=============================================================================
+; Bits de configuración
+;=============================================================================
     CONFIG  FOSC   = HS
     CONFIG  CPUDIV = OSC1_PLL2
     CONFIG  USBDIV = 1
     CONFIG  WDT    = OFF
     CONFIG  WDTPS  = 32768
     CONFIG  LVP    = OFF
-    CONFIG  PBADEN = OFF        ; RB0-RB4 digitales
+    CONFIG  PBADEN = OFF        ; RB0–RB4 como pines digitales
     CONFIG  MCLRE  = OFF
     CONFIG  STVREN = ON
     CONFIG  XINST  = OFF
 
-    ;=======================================================
-    ; Constantes
-    ;=======================================================
-    #define T0_PRELOAD       6
+;=============================================================================
+; Constantes generales
+;=============================================================================
 
-    #define VEL_NORMAL       8
-    #define VEL_RAPIDA       4
-    #define VEL_LENTA        16
+    ; Timer0
+    #define T0_PRELOAD       6      ; Preload para 64 ms/tick
 
-    #define DEBOUNCE_TICKS   3      ; 3 × 64 ms = 192 ms
+    ; Velocidades (en ticks de 64 ms)
+    #define VEL_NORMAL       8      ;  512 ms/paso
+    #define VEL_RAPIDA       4      ;  256 ms/paso
+    #define VEL_LENTA        16     ; 1024 ms/paso
 
-    ; Bits de Flags
-    #define FLAG_PASO        0
-    #define FLAG_DIR         1      ; 0=hacia RD4, 1=hacia RD0
-    #define FLAG_CAMBIO      2
-    #define FLAG_VEL         3
+    ; Antirebote
+    #define DEBOUNCE_TICKS   3      ; 3 × 64 ms = 192 ms de antirebote
+
+    ; Bits del registro Flags
+    #define FLAG_PASO        0      ; 1 = ejecutar siguiente paso
+    #define FLAG_DIR         1      ; 0 = hacia RD4  |  1 = hacia RD0
+    #define FLAG_CAMBIO      2      ; 1 = RB0 presionado ? avanzar secuencia
+    #define FLAG_VEL         3      ; 1 = RB1 presionado ? cambiar velocidad
 
     ; Secuencias
     #define TOTAL_SECUENCIAS 4
-    #define TOTAL_PASOS_PP   8
-    #define TOTAL_PASOS_LL   9
-    #define TOTAL_PASOS_ALT  8
-    #define TOTAL_PASOS_BIN  32
+    #define TOTAL_PASOS_PP   8      ; Ping-Pong
+    #define TOTAL_PASOS_LL   9      ; Llenado / Vaciado
+    #define TOTAL_PASOS_ALT  8      ; Alternado
+    #define TOTAL_PASOS_BIN  32     ; Contador binario (0–31)
 
-    ; Máscaras RD0-RD4
-    #define MASK_LEDS        0x1F
-    #define MASK_PARES       0x15
-    #define MASK_IMPARES     0x0A
+    ; Máscaras de puerto D
+    #define MASK_LEDS        0x1F   ; RD0–RD4
+    #define MASK_PARES       0x15   ; RD0, RD2, RD4  (b10101)
+    #define MASK_IMPARES     0x0A   ; RD1, RD3        (b01010)
 
-    ;=======================================================
-    ; Vector de Reset
-    ;=======================================================
+;=============================================================================
+; Vectores de interrupción y reset
+;=============================================================================
+
     PSECT  resetVec, class=CODE, reloc=2
-    ORG     0x0000
+    ORG 0x0000
     GOTO    Inicio
 
-    ;=======================================================
-    ; Vector ISR Alta prioridad (0x0008)
-    ;=======================================================
     PSECT  highIntVec, class=CODE, reloc=2
-    ORG     0x0008
+    ORG 0x0008
     GOTO    ISR_High
 
-    ;=======================================================
-    ; Vector ISR Baja prioridad (0x0018) — sin uso
-    ;=======================================================
     PSECT  lowIntVec, class=CODE, reloc=2
-    ORG     0x0018
-    RETFIE
+    ORG 0x0018
+    RETFIE                          ; Interrupciones de baja prioridad no usadas
 
-    ;=======================================================
-    ; ISR Alta prioridad
-    ; Guarda/restaura contexto manualmente.
-    ; Atiende: Timer0, INT0 (RB0), INT1 (RB1)
-    ;=======================================================
+;=============================================================================
+; ISR – Alta prioridad
+;
+; Fuentes atendidas:
+;   · Timer0 (T0IF)  ? antirebote SEQ/VEL  +  tick de secuencia
+;   · INT0   (RB0)   ? solicitud de avance de secuencia
+;   · INT1   (RB1)   ? solicitud de cambio de velocidad
+;
+; El contexto (W, STATUS, BSR) se guarda y restaura manualmente.
+;=============================================================================
+
     PSECT  isrCode, class=CODE, reloc=2
 
 ISR_High:
-    MOVWF   W_ISR, A
-    MOVFF   STATUS, STATUS_ISR
-    MOVFF   BSR, BSR_ISR
+    ; -- Guardar contexto -----------------------------------------------------
+    MOVWF   W_ISR,      A
+    MOVFF   STATUS,     STATUS_ISR
+    MOVFF   BSR,        BSR_ISR
 
-    ; -- Timer0 ------------------------------------------
-    BTFSS   INTCON, 2, A        ; T0IF?
+    ; -- Timer0 ---------------------------------------------------------------
+    BTFSS   INTCON, 2,  A           ; ¿T0IF activo?
     GOTO    ISR_INT0
-    BCF     INTCON, 2, A        ; Limpiar T0IF
+    BCF     INTCON, 2,  A           ; Limpiar T0IF
     MOVLW   T0_PRELOAD
-    MOVWF   TMR0L, A
+    MOVWF   TMR0L,      A           ; Recargar Timer0
 
-    ; Antirebote SEQ: decrementar si >0; al llegar a 0 ? flag
+    ; Antirebote SEQ: decrementar contador; al llegar a 0 habilitar FLAG_CAMBIO
     MOVF    DebounceTimer_SEQ, F, A
     BZ      ISR_T0_Vel
     DECF    DebounceTimer_SEQ, F, A
@@ -120,7 +142,7 @@ ISR_High:
     BSF     Flags, FLAG_CAMBIO, A
 
 ISR_T0_Vel:
-    ; Antirebote VEL: ídem
+    ; Antirebote VEL: decrementar contador; al llegar a 0 habilitar FLAG_VEL
     MOVF    DebounceTimer_VEL, F, A
     BZ      ISR_T0_Paso
     DECF    DebounceTimer_VEL, F, A
@@ -128,7 +150,8 @@ ISR_T0_Vel:
     BSF     Flags, FLAG_VEL, A
 
 ISR_T0_Paso:
-    ; Tick de secuencia
+    ; Tick de secuencia: incrementar TickCount; al alcanzar VelocidadActual
+    ; se genera FLAG_PASO para que el loop principal ejecute el siguiente paso
     INCF    TickCount, F, A
     MOVF    VelocidadActual, W, A
     CPFSEQ  TickCount, A
@@ -136,108 +159,110 @@ ISR_T0_Paso:
     CLRF    TickCount, A
     BSF     Flags, FLAG_PASO, A
 
-    ; -- INT0 (RB0) --------------------------------------
+    ; -- INT0 (RB0) – Avanzar secuencia ---------------------------------------
 ISR_INT0:
-    BTFSS   INTCON, 1, A        ; INT0IF?
+    BTFSS   INTCON, 1,  A           ; ¿INT0IF activo?
     GOTO    ISR_INT1
-    BCF     INTCON, 1, A        ; Limpiar INT0IF
+    BCF     INTCON, 1,  A           ; Limpiar INT0IF
     MOVF    DebounceTimer_SEQ, F, A
-    BNZ     ISR_INT1            ; Debounce activo ? ignorar rebote
+    BNZ     ISR_INT1                ; Rebote activo ? ignorar
     MOVLW   DEBOUNCE_TICKS
     MOVWF   DebounceTimer_SEQ, A
 
-    ; -- INT1 (RB1) --------------------------------------
+    ; -- INT1 (RB1) – Cambiar velocidad ---------------------------------------
 ISR_INT1:
-    BTFSS   INTCON3, 0, A       ; INT1IF? (INTCON3<0>)
+    BTFSS   INTCON3, 0, A           ; ¿INT1IF activo? (INTCON3<0>)
     GOTO    ISR_Exit
-    BCF     INTCON3, 0, A       ; Limpiar INT1IF
+    BCF     INTCON3, 0, A           ; Limpiar INT1IF
     MOVF    DebounceTimer_VEL, F, A
-    BNZ     ISR_Exit
+    BNZ     ISR_Exit                ; Rebote activo ? ignorar
     MOVLW   DEBOUNCE_TICKS
     MOVWF   DebounceTimer_VEL, A
 
+    ; -- Restaurar contexto ---------------------------------------------------
 ISR_Exit:
-    MOVFF   BSR_ISR, BSR
+    MOVFF   BSR_ISR,    BSR
     MOVFF   STATUS_ISR, STATUS
-    MOVF    W_ISR, W, A
-    RETFIE                      ; Sin fast-return
+    MOVF    W_ISR, W,   A
+    RETFIE
 
-    ;=======================================================
-    ; Código Principal
-    ;=======================================================
+;=============================================================================
+; Inicio – Configuración del hardware y variables
+;=============================================================================
+
     PSECT  mainCode, class=CODE, reloc=2
 
 Inicio:
-    ; -- Pines analógicos ? digitales -------------------
-    ; Puerto D no tiene conflicto con USB ni analógicos,
-    ; pero ADCON1 se deja en 0x0F por buena práctica.
+    ; -- Pines analógicos ? digitales -----------------------------------------
     MOVLW   0x0F
-    MOVWF   ADCON1, A           ; AN0-AN12 todos digitales
+    MOVWF   ADCON1, A
 
-    ; -- Puerto D: RD0-RD4 salidas (LEDs) ---------------
-    ; TRISD = 1110 0000  (RD0-RD4 salidas, RD5-RD7 entradas)
+    ; -- Puerto D: RD0–RD4 como salidas (LEDs) --------------------------------
     MOVLW   0xE0
     MOVWF   TRISD, A
-    CLRF    LATD, A
+    CLRF    LATD,  A
 
-    ; -- Puerto B: entradas (RB0=INT0, RB1=INT1) --------
+    ; -- Puerto B: todas las líneas como entradas (RB0=INT0, RB1=INT1) --------
     MOVLW   0xFF
     MOVWF   TRISB, A
 
-    ; -- Variables ---------------------------------------
-    CLRF    TickCount, A
-    CLRF    Flags, A
-    CLRF    PasoActual, A
-    CLRF    SecuenciaActual, A
-    CLRF    DebounceTimer_SEQ, A
-    CLRF    DebounceTimer_VEL, A
-    CLRF    IndiceVelocidad, A
+    ; -- Inicializar variables -------------------------------------------------
+    CLRF    TickCount,          A
+    CLRF    Flags,              A
+    CLRF    PasoActual,         A
+    CLRF    SecuenciaActual,    A
+    CLRF    DebounceTimer_SEQ,  A
+    CLRF    DebounceTimer_VEL,  A
+    CLRF    IndiceVelocidad,    A
     MOVLW   VEL_NORMAL
-    MOVWF   VelocidadActual, A
+    MOVWF   VelocidadActual,    A
 
-    ; Estado inicial: RD0 encendido, dirección hacia RD4
+    ; -- Estado inicial: RD0 encendido, dirección hacia RD4 -------------------
     MOVLW   0x01
     MOVWF   LATD, A
     BCF     Flags, FLAG_DIR, A
 
-    ; -- Timer0: 8-bit, reloj interno, prescaler 1:256 --
-    ; T0CON = 1100 0111
+    ; -- Timer0: modo 8-bit, reloj interno, prescaler 1:256 -------------------
     MOVLW   0xC7
     MOVWF   T0CON, A
     MOVLW   T0_PRELOAD
     MOVWF   TMR0L, A
 
-    ; -- INT0/INT1 por flanco de bajada ------------------
-    ; INTCON2<6>=INTEDG0=0, INTCON2<5>=INTEDG1=0
+    ; -- INT0 / INT1: flanco de bajada -----------------------------------------
     BCF     INTCON2, 6, A
     BCF     INTCON2, 5, A
 
-    ; -- INT1 ? alta prioridad (mismo vector que INT0) --
-    ; INTCON3<6>=INT1IP=1
+    ; -- INT1 ? alta prioridad -------------------------------------------------
     BSF     INTCON3, 6, A
-    BCF     INTCON3, 0, A       ; Limpiar INT1IF
-    BSF     INTCON3, 3, A       ; INT1IE=1
+    BCF     INTCON3, 0, A
+    BSF     INTCON3, 3, A
 
-    ; -- Habilitar interrupciones ------------------------
-    BCF     INTCON, 2, A        ; Limpiar T0IF
-    BCF     INTCON, 1, A        ; Limpiar INT0IF
-    BSF     RCON,   7, A        ; IPEN=1 (modo con prioridades)
-    BSF     INTCON, 5, A        ; T0IE=1
-    BSF     INTCON, 4, A        ; INT0IE=1
-    BSF     INTCON, 7, A        ; GIEH=1
+    ; -- Habilitar interrupciones ----------------------------------------------
+    BCF     INTCON, 2,  A           ; Limpiar T0IF
+    BCF     INTCON, 1,  A           ; Limpiar INT0IF
+    BSF     RCON,   7,  A           ; IPEN: prioridades habilitadas
+    BSF     INTCON, 5,  A           ; TMR0IE
+    BSF     INTCON, 4,  A           ; INT0IE
+    BSF     INTCON, 7,  A           ; GIE
 
-    ;=======================================================
-    ; Loop principal
-    ; Prioridad: FLAG_CAMBIO > FLAG_VEL > FLAG_PASO
-    ;=======================================================
+;=============================================================================
+; Loop principal
+;
+; Prioridad de atención de flags:
+;   1. FLAG_CAMBIO ? avanzar a la siguiente secuencia
+;   2. FLAG_VEL    ? ciclar la velocidad de ejecución
+;   3. FLAG_PASO   ? ejecutar el siguiente paso de la secuencia activa
+;=============================================================================
+
 Loop:
+    ; -- Avanzar secuencia ----------------------------------------------------
     BTFSS   Flags, FLAG_CAMBIO, A
     GOTO    Check_Vel
     BCF     Flags, FLAG_CAMBIO, A
-    CALL    Siguiente_Secuencia
-    CALL    Reiniciar_Secuencia
+    CALL    Avanzar_Secuencia
     GOTO    Loop
 
+    ; -- Cambiar velocidad ----------------------------------------------------
 Check_Vel:
     BTFSS   Flags, FLAG_VEL, A
     GOTO    Check_Paso
@@ -245,6 +270,7 @@ Check_Vel:
     CALL    Cambiar_Velocidad
     GOTO    Loop
 
+    ; -- Ejecutar siguiente paso -----------------------------------------------
 Check_Paso:
     BTFSS   Flags, FLAG_PASO, A
     GOTO    Loop
@@ -258,44 +284,44 @@ Check_Paso:
     BZ      Exec_Alternado
     GOTO    Exec_Binario
 
-    ;=======================================================
-    ; SEQ 0: Ping-Pong  RD0?RD4
-    ; FLAG_DIR=0 ? hacia RD4 (shift izq)
-    ; FLAG_DIR=1 ? hacia RD0 (shift der)
-    ;=======================================================
+
+; SEQ 0 – Ping-Pong  (RD0 ? RD4)
+
+
 Exec_PingPong:
     BTFSS   Flags, FLAG_DIR, A
     GOTO    PP_HaciaRD4
 
 PP_HaciaRD0:
-    RRCF    LATD, W, A          ; Shift derecha ? W (no toca Carry de LATD)
+    RRCF    LATD, W, A
     ANDLW   MASK_LEDS
     MOVWF   LATD, A
-    XORLW   0x01                ; ¿Llegó a RD0?
+    XORLW   0x01                    ; ¿llegó a RD0?
     BNZ     PP_FinPaso
-    BCF     Flags, FLAG_DIR, A  ; Invertir dirección
+    BCF     Flags, FLAG_DIR, A      ; Cambiar dirección ? hacia RD4
     GOTO    PP_FinPaso
 
 PP_HaciaRD4:
-    RLCF    LATD, W, A          ; Shift izquierda ? W
+    RLCF    LATD, W, A
     ANDLW   MASK_LEDS
     MOVWF   LATD, A
-    XORLW   0x10                ; ¿Llegó a RD4?
+    XORLW   0x10                    ; ¿llegó a RD4?
     BNZ     PP_FinPaso
-    BSF     Flags, FLAG_DIR, A  ; Invertir dirección
+    BSF     Flags, FLAG_DIR, A      ; Cambiar dirección ? hacia RD0
 
 PP_FinPaso:
     INCF    PasoActual, F, A
     MOVF    PasoActual, W, A
     XORLW   TOTAL_PASOS_PP
     BNZ     Loop
-    CALL    Siguiente_Secuencia
-    CLRF    LATD, A
+    CLRF    PasoActual, A           ; Reiniciar ciclo (misma secuencia)
+    MOVLW   0x01
+    MOVWF   LATD, A
+    BCF     Flags, FLAG_DIR, A
     GOTO    Loop
 
-    ;=======================================================
-    ; SEQ 1: Llenado / Vaciado
-    ;=======================================================
+; SEQ 1 – Llenado / Vaciado
+
 Exec_Llenado:
     MOVF    PasoActual, W, A
     CALL    Tabla_Llenado
@@ -304,30 +330,30 @@ Exec_Llenado:
     MOVF    PasoActual, W, A
     XORLW   TOTAL_PASOS_LL
     BNZ     Loop
-    CALL    Siguiente_Secuencia
-    MOVLW   MASK_PARES
-    MOVWF   LATD, A
+    CLRF    PasoActual, A           ; Reiniciar ciclo (misma secuencia)
     GOTO    Loop
 
-    ;=======================================================
-    ; SEQ 2: Parpadeo Alternado
-    ;=======================================================
+
+; SEQ 2 – Parpadeo Alternado
+
+
 Exec_Alternado:
     MOVF    LATD, W, A
-    XORLW   MASK_LEDS
+    XORLW   MASK_LEDS               ; Toggle de todos los LEDs
     ANDLW   MASK_LEDS
     MOVWF   LATD, A
     INCF    PasoActual, F, A
     MOVF    PasoActual, W, A
     XORLW   TOTAL_PASOS_ALT
     BNZ     Loop
-    CALL    Siguiente_Secuencia
-    CLRF    LATD, A
+    CLRF    PasoActual, A           ; Reiniciar ciclo (misma secuencia)
+    MOVLW   MASK_PARES
+    MOVWF   LATD, A
     GOTO    Loop
 
-    ;=======================================================
-    ; SEQ 3: Contador Binario 0-31
-    ;=======================================================
+
+; SEQ 3 – Contador Binario (0–31)
+
 Exec_Binario:
     MOVF    LATD, W, A
     INCF    WREG, W
@@ -337,37 +363,39 @@ Exec_Binario:
     MOVF    PasoActual, W, A
     XORLW   TOTAL_PASOS_BIN
     BNZ     Loop
-    CALL    Siguiente_Secuencia
+    CLRF    PasoActual, A           ; Reiniciar ciclo (misma secuencia)
     MOVLW   0x01
     MOVWF   LATD, A
-    BCF     Flags, FLAG_DIR, A
     GOTO    Loop
 
-    ;=======================================================
-    ; Siguiente_Secuencia: avanza con wrap y resetea paso
-    ;=======================================================
-Siguiente_Secuencia:
-    CLRF    PasoActual, A
+
+; Avanzar_Secuencia
+
+
+Avanzar_Secuencia:
     INCF    SecuenciaActual, F, A
     MOVF    SecuenciaActual, W, A
     XORLW   TOTAL_SECUENCIAS
-    BNZ     SigSec_Fin
+    BNZ     AvSec_Reinic
     CLRF    SecuenciaActual, A
-SigSec_Fin:
-    RETURN
 
-    ;=======================================================
-    ; Reiniciar_Secuencia: estado inicial de LEDs
-    ;=======================================================
+AvSec_Reinic:
+    ; Caída intencional hacia Reiniciar_Secuencia (comparte su RETURN)
+
+
+; Reiniciar_Secuencia
+
+
 Reiniciar_Secuencia:
-    CLRF    LATD, A
+    CLRF    LATD,       A
+    CLRF    PasoActual, A
     MOVF    SecuenciaActual, W, A
     BZ      Reinic_PP
     DECF    WREG, W
     BZ      Reinic_LL
     DECF    WREG, W
     BZ      Reinic_Alt
-    RETURN                      ; Binario: LATD=0
+    RETURN                          ; Binario: LATD = 0, nada más que hacer
 
 Reinic_PP:
     MOVLW   0x01
@@ -384,15 +412,20 @@ Reinic_Alt:
     MOVWF   LATD, A
     RETURN
 
-    ;=======================================================
-    ; Cambiar_Velocidad: cicla Normal?Rápida?Lenta?Normal
-    ;=======================================================
+;=============================================================================
+; Cambiar_Velocidad
+;
+; Cicla entre los tres niveles de velocidad: Normal ? Rápida ? Lenta ? Normal.
+; Reinicia TickCount para que el nuevo período surta efecto de inmediato.
+;=============================================================================
+
 Cambiar_Velocidad:
     INCF    IndiceVelocidad, F, A
     MOVF    IndiceVelocidad, W, A
     XORLW   3
     BNZ     CambiarVel_Ok
     CLRF    IndiceVelocidad, A
+
 CambiarVel_Ok:
     MOVF    IndiceVelocidad, W, A
     CALL    Tabla_Velocidades
@@ -400,48 +433,51 @@ CambiarVel_Ok:
     CLRF    TickCount, A
     RETURN
 
-    ;=======================================================
-    ; Tabla_Velocidades (PCL jump table — dentro de página 0)
-    ;=======================================================
+;=============================================================================
+; Tabla_Velocidades  (jump table vía PCL – debe permanecer en la página 0)
+;
+; Índice 0 ? VEL_NORMAL  ( 512 ms/paso)
+; Índice 1 ? VEL_RAPIDA  ( 256 ms/paso)
+; Índice 2 ? VEL_LENTA   (1024 ms/paso)
+;=============================================================================
+
 Tabla_Velocidades:
     ANDLW   0x03
     ADDWF   PCL, F, A
-    RETLW   VEL_NORMAL          ; índice 0 ? 512  ms
-    RETLW   VEL_RAPIDA          ; índice 1 ? 256  ms
-    RETLW   VEL_LENTA           ; índice 2 ? 1024 ms
+    RETLW   VEL_NORMAL
+    RETLW   VEL_RAPIDA
+    RETLW   VEL_LENTA
 
-    ;=======================================================
-    ; Tabla_Llenado (PCL jump table)
-    ;=======================================================
+
 Tabla_Llenado:
     ANDLW   0x0F
     ADDWF   PCL, F, A
-    RETLW   0x01                ; Paso 0: RD0
-    RETLW   0x03                ; Paso 1: RD0-RD1
-    RETLW   0x07                ; Paso 2: RD0-RD2
-    RETLW   0x0F                ; Paso 3: RD0-RD3
-    RETLW   0x1F                ; Paso 4: RD0-RD4 (lleno)
-    RETLW   0x0F                ; Paso 5: RD0-RD3
-    RETLW   0x07                ; Paso 6: RD0-RD2
-    RETLW   0x03                ; Paso 7: RD0-RD1
-    RETLW   0x01                ; Paso 8: RD0
+    RETLW   0x01                    ; Paso 0: RD0           
+    RETLW   0x03                    ; Paso 1: RD0–RD1       
+    RETLW   0x07                    ; Paso 2: RD0–RD2       
+    RETLW   0x0F                    ; Paso 3: RD0–RD3       
+    RETLW   0x1F                    ; Paso 4: RD0–RD4       
+    RETLW   0x0F                    ; Paso 5: RD0–RD3       
+    RETLW   0x07                    ; Paso 6: RD0–RD2       
+    RETLW   0x03                    ; Paso 7: RD0–RD1       
+    RETLW   0x01                    ; Paso 8: RD0           
 
-    ;=======================================================
-    ; Variables en RAM — banco de acceso (0x000-0x05F)
-    ; PSECT sin class= para que pic-as lo asigne
-    ; correctamente al access bank sin error 873.
-    ;=======================================================
+
+; Variables en RAM 
+
+
     PSECT   udata_acs
-TickCount:          DS 1
-VelocidadActual:    DS 1
-IndiceVelocidad:    DS 1
-Flags:              DS 1
-SecuenciaActual:    DS 1
-PasoActual:         DS 1
-DebounceTimer_SEQ:  DS 1
-DebounceTimer_VEL:  DS 1
-W_ISR:              DS 1
-STATUS_ISR:         DS 1
-BSR_ISR:            DS 1
+
+TickCount:          DS 1    
+VelocidadActual:    DS 1    
+IndiceVelocidad:    DS 1    
+Flags:              DS 1    
+SecuenciaActual:    DS 1    
+PasoActual:         DS 1    
+DebounceTimer_SEQ:  DS 1    
+DebounceTimer_VEL:  DS 1    
+W_ISR:              DS 1    
+STATUS_ISR:         DS 1    
+BSR_ISR:            DS 1    
 
     END
