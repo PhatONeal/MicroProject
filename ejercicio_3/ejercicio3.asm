@@ -1,6 +1,7 @@
 ;=======================================
 ; PIC18F4550 - 4 Secuencias + boton RB0
-; BUG: logica de boton invertida
+; Boton corregido + anti-rebote
+; Sin control de velocidad aun
 ; Oscilador interno 4MHz
 ;=======================================
 
@@ -61,86 +62,119 @@ Secuencia1:
     MOVLW   0b00000001
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0        ; BUG: deberia ser BTFSS (logica invertida)
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     MOVLW   0b00000010
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0        ; BUG: idem
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     MOVLW   0b00000100
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     MOVLW   0b00001000
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     GOTO    Despachador
 
 Secuencia2:
     MOVLW   0b00000101
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     MOVLW   0b00001010
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     GOTO    Despachador
 
 Secuencia3:
     MOVLW   0b00000001
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00000011
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00000111
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00001111
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     CLRF    LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     GOTO    Despachador
 
 Secuencia4:
     MOVLW   0b00000001
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00000010
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00000100
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00001000
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00000100
     MOVWF   LATD
     CALL    Retardo_500ms
+    CALL    RevisarBoton
+
     MOVLW   0b00000010
     MOVWF   LATD
     CALL    Retardo_500ms
-    BTFSC   PORTB, 0
-    CALL    CambiarSecuencia
+    CALL    RevisarBoton
+
     GOTO    Despachador
 
+; Revisa boton RB0 (activo en bajo)
+RevisarBoton:
+    BTFSS   PORTB, 0        ; si RB0=1 (no presionado) -> salta
+    CALL    CambiarSecuencia
+    RETURN
+
 CambiarSecuencia:
+    CALL    Retardo_Debounce
+    BTFSC   PORTB, 0        ; si se soltó durante debounce -> ignorar
+    RETURN
+
     INCF    SecActual, F
     MOVLW   4
     SUBWF   SecActual, W
     BTFSC   STATUS, 2
     CLRF    SecActual
+
+EsperaS:
+    BTFSS   PORTB, 0
+    GOTO    EsperaS
+    CALL    Retardo_Debounce
     GOTO    Despachador
 
 Retardo_500ms:
@@ -161,6 +195,26 @@ Loop500c:
     GOTO    Loop500b
     DECFSZ  ContadorExterno, F
     GOTO    Loop500a
+    RETURN
+
+Retardo_Debounce:
+    MOVLW   1
+    MOVWF   ContadorExterno
+LoopDa:
+    MOVLW   66
+    MOVWF   ContadorMedio
+LoopDb:
+    MOVLW   150
+    MOVWF   ContadorInterno
+LoopDc:
+    NOP
+    NOP
+    DECFSZ  ContadorInterno, F
+    GOTO    LoopDc
+    DECFSZ  ContadorMedio, F
+    GOTO    LoopDb
+    DECFSZ  ContadorExterno, F
+    GOTO    LoopDa
     RETURN
 
     END
